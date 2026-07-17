@@ -7,6 +7,7 @@ import { leave, myId, playAgain, playerColor, submitGuess } from '../lib/mp';
 import { useIdleGuard } from '../lib/useIdleGuard';
 import type { RevealPin } from './MapView';
 import MapView from './MapView';
+import ExitButton from './ExitButton';
 import FlagCard from './FlagCard';
 import IdleModal from './IdleModal';
 import Loader from './Loader';
@@ -24,6 +25,7 @@ function useCountdown(endsAt: number | null): number {
 export default function MultiplayerGame() {
   const countries = useCountries();
   const { phase, round, players, guessedIds, myGuess, results, totals, isHost, settings } = useStore();
+  const setScreen = useStore((s) => s.setScreen);
   const [pin, setPin] = useState<{ lat: number; lng: number } | null>(null);
   const [resetKey, setResetKey] = useState(0);
 
@@ -116,6 +118,12 @@ export default function MultiplayerGame() {
                 {guessedIds.length}/{players.length}
               </div>
             </div>
+            <ExitButton
+              onExit={() => {
+                void leave(false);
+                setScreen('landing');
+              }}
+            />
           </div>
         </>
       )}

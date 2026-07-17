@@ -13,6 +13,7 @@ export default function WaitingRoom() {
   const [rounds, setRounds] = useState(settings.rounds);
   const [seconds, setSeconds] = useState(settings.seconds);
   const [copied, setCopied] = useState(false);
+  const [showLink, setShowLink] = useState(false);
 
   const { warning, secondsLeft, stay } = useIdleGuard(true, () => {
     void leave(true);
@@ -22,11 +23,30 @@ export default function WaitingRoom() {
   const shareUrl = `${location.origin}${location.pathname}?join=${code}`;
 
   const copy = async () => {
+    let ok = false;
     try {
       await navigator.clipboard.writeText(shareUrl);
+      ok = true;
+    } catch { /* blocked (e.g. iframe without permission) — try fallback */ }
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = shareUrl;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        ta.remove();
+      } catch { ok = false; }
+    }
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard unavailable */ }
+    } else {
+      // Never fail silently — show the link so it can be copied by hand.
+      setShowLink(true);
+    }
   };
 
   return (
@@ -50,6 +70,14 @@ export default function WaitingRoom() {
           <div className="text-xs text-slate-500 mt-2 font-semibold">
             {copied ? '✅ Invite link copied!' : 'tap the code to copy an invite link'}
           </div>
+          {showLink && (
+            <input
+              readOnly
+              value={shareUrl}
+              onFocus={(e) => e.target.select()}
+              className="input mt-2 text-xs text-center"
+            />
+          )}
         </div>
 
         <div className="mb-6">

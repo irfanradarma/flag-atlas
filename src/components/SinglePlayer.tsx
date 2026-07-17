@@ -6,6 +6,7 @@ import { distanceToCountry, formatKm, scoreFromDistance } from '../lib/scoring';
 import { SCORE_MAX } from '../lib/config';
 import MapView from './MapView';
 import FlagCard from './FlagCard';
+import ExitButton from './ExitButton';
 import Loader from './Loader';
 
 interface RoundResult {
@@ -121,9 +122,12 @@ export default function SinglePlayer() {
           <div className="absolute top-3 left-3 z-10">
             <FlagCard iso={plan[i]} roundLabel={`Round ${i + 1}/${plan.length}`} />
           </div>
-          <div className="absolute top-3 right-3 z-10 glass rounded-2xl px-4 py-2 text-right">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Score</div>
-            <div className="text-xl font-black text-amber-300">{total.toLocaleString()}</div>
+          <div className="absolute top-3 right-3 z-10 flex flex-col items-end gap-2">
+            <div className="glass rounded-2xl px-4 py-2 text-right">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Score</div>
+              <div className="text-xl font-black text-amber-300">{total.toLocaleString()}</div>
+            </div>
+            <ExitButton onExit={() => setScreen('landing')} />
           </div>
         </>
       )}
