@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useStore } from './lib/store';
-import { loadCountries } from './lib/countries';
+import { loadCountries, loadFacts } from './lib/countries';
 import Landing from './components/Landing';
 import SinglePlayer from './components/SinglePlayer';
 import MultiplayerMenu from './components/MultiplayerMenu';
@@ -24,6 +24,7 @@ export default function App() {
 
   useEffect(() => {
     void loadCountries();
+    void loadFacts();
     // deep link: ?join=CODE goes straight to the multiplayer menu
     const code = new URLSearchParams(location.search).get('join');
     if (code) setScreen('mp-menu');

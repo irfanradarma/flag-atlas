@@ -12,8 +12,43 @@ export interface CountryData {
   pool: { iso: string; name: string }[];
 }
 
+export interface CountryFacts {
+  name: string;
+  capital: string | null;
+  region: string | null;
+  languages: string[];
+  area: number | null;
+  pop: number | null;
+  landmark: string | null;
+}
+
 let cache: CountryData | null = null;
 let promise: Promise<CountryData> | null = null;
+let factsCache: Record<string, CountryFacts> | null = null;
+let factsPromise: Promise<Record<string, CountryFacts>> | null = null;
+
+export function loadFacts(): Promise<Record<string, CountryFacts>> {
+  if (!factsPromise) {
+    factsPromise = fetch(`${import.meta.env.BASE_URL}data/facts.json`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`facts data HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((f: Record<string, CountryFacts>) => {
+        factsCache = f;
+        return f;
+      });
+  }
+  return factsPromise;
+}
+
+export function useFacts(iso: string): CountryFacts | null {
+  const [facts, setFacts] = useState(factsCache);
+  useEffect(() => {
+    if (!facts) loadFacts().then(setFacts);
+  }, [facts]);
+  return facts?.[iso] ?? null;
+}
 
 export function loadCountries(): Promise<CountryData> {
   if (!promise) {
@@ -60,7 +95,11 @@ export function pickRoundCountries(n: number): string[] {
 }
 
 export function countryName(iso: string): string {
-  return cache?.byIso.get(iso)?.properties.name ?? iso.toUpperCase();
+  return (
+    factsCache?.[iso]?.name ??
+    cache?.byIso.get(iso)?.properties.name ??
+    iso.toUpperCase()
+  );
 }
 
 export function flagUrl(iso: string, width: 320 | 640 = 640): string {
