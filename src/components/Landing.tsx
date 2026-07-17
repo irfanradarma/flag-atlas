@@ -73,6 +73,7 @@ export default function Landing() {
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4 }}
         href={HUB_URL}
+        target="_top"
         className="mt-12 text-sm text-slate-500 hover:text-slate-300 transition font-semibold"
       >
         🪐 Back to Game Zone
