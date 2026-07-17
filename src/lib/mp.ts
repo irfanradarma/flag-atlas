@@ -20,6 +20,12 @@ let collected = new Map<number, Map<string, GuessEntry>>();
 let revealSent = new Set<number>();
 let roundTimer: ReturnType<typeof setTimeout> | undefined;
 let advanceTimer: ReturnType<typeof setTimeout> | undefined;
+let hostGoneTimer: ReturnType<typeof setTimeout> | undefined;
+
+// Presence needs time to converge when several players join at once — with
+// 3+ concurrent joins the full member list can take multiple seconds to sync.
+const JOIN_VALIDATION_MS = 8000;
+const HOST_GONE_GRACE_MS = 4000;
 
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
@@ -48,8 +54,10 @@ function set(partial: Partial<StoreState>) {
 function clearTimers() {
   clearTimeout(roundTimer);
   clearTimeout(advanceTimer);
+  clearTimeout(hostGoneTimer);
   roundTimer = undefined;
   advanceTimer = undefined;
+  hostGoneTimer = undefined;
 }
 
 // Release the websocket slot the moment the tab closes (plan §4.3).
@@ -84,11 +92,28 @@ function attachHandlers(ch: RealtimeChannel) {
     const players = readPlayers();
     set({ players });
     const st = useStore.getState();
-    // Guest: host vanished mid-session → end gracefully.
-    if (!isHost && st.phase !== 'idle' && players.length > 0 && !players.some((p) => p.host)) {
-      void leave(false);
-      set({ error: 'The host left the lobby.', screen: 'mp-menu' });
-      return;
+    // Guest: host vanished mid-session → end gracefully. Presence state can
+    // transiently miss members while several players join at once, so require
+    // the host to stay absent for a grace period before kicking anyone.
+    if (!isHost && st.phase !== 'idle' && players.length > 0) {
+      const hostPresent = players.some((p) => p.host);
+      if (hostPresent) {
+        clearTimeout(hostGoneTimer);
+        hostGoneTimer = undefined;
+      } else if (!hostGoneTimer) {
+        hostGoneTimer = setTimeout(() => {
+          hostGoneTimer = undefined;
+          const now = readPlayers();
+          if (
+            channel && !isHost && useStore.getState().phase !== 'idle' &&
+            now.length > 0 && !now.some((p) => p.host)
+          ) {
+            void leave(false);
+            set({ error: 'The host left the lobby.', screen: 'mp-menu' });
+          }
+        }, HOST_GONE_GRACE_MS);
+      }
+      if (!hostPresent) return;
     }
     // Host: a player leaving mid-round may complete the "everyone guessed" set.
     if (isHost && st.phase === 'round' && st.round) maybeReveal(st.round.i);
@@ -124,27 +149,31 @@ async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'not-f
   isHost = asHost;
   await ch.track({ name: me!.name, host: asHost, playing: false });
 
-  // Presence sync settles shortly after subscribe; poll briefly for a host.
-  const deadline = Date.now() + 3000;
-  let others: PlayerInfo[] = [];
-  let hostSeen: PlayerInfo | undefined;
-  while (Date.now() < deadline) {
-    const players = readPlayers();
-    others = players.filter((p) => p.id !== me!.id);
-    hostSeen = others.find((p) => p.host);
-    if (asHost ? true : hostSeen) break;
-    await new Promise((r) => setTimeout(r, 150));
+  if (asHost) {
+    // Brief settle to detect an (astronomically unlikely) code collision.
+    await new Promise((r) => setTimeout(r, 600));
+    if (readPlayers().some((p) => p.id !== me!.id && p.host)) {
+      await teardownChannel();
+      return 'taken'; // caller retries with a fresh code
+    }
+    return 'ok';
   }
 
-  if (asHost && others.some((p) => p.host)) {
-    await teardownChannel();
-    return 'taken'; // astronomically unlikely code collision — caller retries
+  // Guest: wait for the host to appear in presence. Under concurrent joins
+  // the member list converges slowly, so give it a generous window.
+  const deadline = Date.now() + JOIN_VALIDATION_MS;
+  let hostSeen: PlayerInfo | undefined;
+  while (Date.now() < deadline) {
+    hostSeen = readPlayers().find((p) => p.id !== me!.id && p.host);
+    if (hostSeen) break;
+    await new Promise((r) => setTimeout(r, 200));
   }
-  if (!asHost && !hostSeen) {
+
+  if (!hostSeen) {
     await teardownChannel();
     return 'not-found';
   }
-  if (!asHost && hostSeen?.playing) {
+  if (hostSeen.playing) {
     await teardownChannel();
     return 'in-progress';
   }
