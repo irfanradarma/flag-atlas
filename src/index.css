@@ -1,0 +1,84 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Outfit', ui-sans-serif, system-ui, sans-serif;
+  --color-ocean: #0b1526;
+  --color-panel: #111e33;
+  --color-panel-2: #182741;
+  --color-accent: #fbbf24;
+  --color-accent-2: #38bdf8;
+  --color-good: #34d399;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--color-ocean);
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── buttons ── */
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 rounded-2xl font-bold transition
+    active:scale-95 disabled:opacity-40 disabled:pointer-events-none select-none cursor-pointer;
+}
+.btn-primary {
+  @apply bg-amber-400 text-slate-900 hover:bg-amber-300 shadow-lg shadow-amber-400/25;
+}
+.btn-secondary {
+  @apply bg-white/10 text-white hover:bg-white/20 border border-white/15;
+}
+.btn-ghost {
+  @apply text-slate-300 hover:text-white hover:bg-white/10;
+}
+
+.input {
+  @apply w-full rounded-xl bg-white/5 border border-white/15 px-4 py-3 text-white
+    placeholder-slate-500 outline-none focus:border-amber-400/70 focus:bg-white/10 transition;
+}
+
+.glass {
+  @apply bg-[#111e33]/90 backdrop-blur-xl border border-white/10 shadow-2xl shadow-black/40;
+}
+
+/* ── my pin marker ── */
+.fa-pin { position: relative; width: 22px; height: 22px; }
+.fa-pin-dot {
+  position: absolute; inset: 4px; border-radius: 9999px;
+  background: #fbbf24; border: 2.5px solid #0b1526;
+  box-shadow: 0 0 0 2px #fbbf24, 0 4px 14px rgba(0,0,0,.6);
+}
+.fa-pin-pulse {
+  position: absolute; inset: -6px; border-radius: 9999px;
+  border: 2px solid rgba(251,191,36,.65);
+  animation: fa-pulse 1.6s ease-out infinite;
+}
+@keyframes fa-pulse {
+  0% { transform: scale(.55); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* ── reveal pins ── */
+.fa-guess { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.fa-guess-dot {
+  width: 14px; height: 14px; border-radius: 9999px;
+  border: 2.5px solid #0b1526; box-shadow: 0 3px 10px rgba(0,0,0,.55);
+}
+.fa-guess-tag {
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+  background: rgba(11,21,38,.92); color: #e2e8f0;
+  padding: 2px 8px; border-radius: 9999px; border: 1px solid rgba(255,255,255,.14);
+}
+
+/* maplibre chrome */
+.maplibregl-ctrl-attrib { background: rgba(11,21,38,.6) !important; }
+.maplibregl-ctrl-attrib a { color: #64748b !important; }
+.maplibregl-canvas { cursor: crosshair; }
