@@ -69,12 +69,12 @@ export default function MapView({
           },
           {
             id: 'hl-fill', type: 'fill', source: 'countries',
-            filter: ['==', ['get', 'iso'], ''],
+            filter: ['==', ['get', 'iso'], '__none__'],
             paint: { 'fill-color': HIGHLIGHT, 'fill-opacity': 0.45 },
           },
           {
             id: 'hl-line', type: 'line', source: 'countries',
-            filter: ['==', ['get', 'iso'], ''],
+            filter: ['==', ['get', 'iso'], '__none__'],
             paint: { 'line-color': HIGHLIGHT, 'line-width': 2 },
           },
         ],
@@ -165,8 +165,8 @@ export default function MapView({
           map.fitBounds([[w, s], [e, n]], { padding: 90, maxZoom: 5.5, duration: 1200 });
         }
       } else {
-        map.setFilter('hl-fill', ['==', ['get', 'iso'], '']);
-        map.setFilter('hl-line', ['==', ['get', 'iso'], '']);
+        map.setFilter('hl-fill', ['==', ['get', 'iso'], '__none__']);
+        map.setFilter('hl-line', ['==', ['get', 'iso'], '__none__']);
       }
     };
 
@@ -181,5 +181,8 @@ export default function MapView({
     map.flyTo({ center: [15, 22], zoom: 1.3, duration: 900 });
   }, [resetKey]);
 
-  return <div ref={containerRef} className="absolute inset-0" />;
+  // Inline style: maplibre-gl.css sets `.maplibregl-map { position: relative }`
+  // which loads after Tailwind and would override an `absolute` utility class,
+  // collapsing the container to height 0.
+  return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;
 }
