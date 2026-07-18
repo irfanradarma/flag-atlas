@@ -2,9 +2,13 @@ import { useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import bbox from '@turf/bbox';
+import type { FeatureCollection } from 'geojson';
 import type { CountryData } from '../lib/countries';
+import { nearestPointOnCountry } from '../lib/countries';
 import { formatKm } from '../lib/scoring';
 import { useStore } from '../lib/store';
+
+const EMPTY_FC: FeatureCollection = { type: 'FeatureCollection', features: [] };
 
 const THEMES = {
   dark: { ocean: '#0b1526', land: '#2e4160', line: '#0b1526', hl: '#34d399' },
@@ -19,6 +23,8 @@ export interface RevealPin {
   color: string;
   km: number | null;
   token?: string;
+  /** name of the country the pin landed in (null = ocean) */
+  pinned?: string | null;
 }
 
 interface Props {
@@ -63,6 +69,7 @@ export default function MapView({
         version: 8,
         sources: {
           countries: { type: 'geojson', data: countries.fc as never, tolerance: 0 },
+          'miss-lines': { type: 'geojson', data: EMPTY_FC as never },
         },
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': c.ocean } },
@@ -83,6 +90,15 @@ export default function MapView({
             id: 'hl-line', type: 'line', source: 'countries',
             filter: ['==', ['get', 'iso'], '__none__'],
             paint: { 'line-color': c.hl, 'line-width': 2 },
+          },
+          {
+            id: 'miss-lines', type: 'line', source: 'miss-lines',
+            paint: {
+              'line-color': ['get', 'color'],
+              'line-width': 2.5,
+              'line-dasharray': [1.2, 1.6],
+              'line-opacity': 0.9,
+            },
           },
         ],
       },
@@ -161,12 +177,40 @@ export default function MapView({
         map.setFilter('hl-fill', ['==', ['get', 'iso'], revealIso]);
         map.setFilter('hl-line', ['==', ['get', 'iso'], revealIso]);
 
+        // dashed line from each missed pin to the nearest border point
+        const lineFeatures = revealPins
+          .filter((p) => p.km != null && p.km > 0)
+          .map((p) => {
+            const target = nearestPointOnCountry(p.lat, p.lng, revealIso);
+            if (!target) return null;
+            return {
+              type: 'Feature' as const,
+              properties: { color: p.color },
+              geometry: {
+                type: 'LineString' as const,
+                coordinates: [[p.lng, p.lat], target],
+              },
+            };
+          })
+          .filter((f): f is NonNullable<typeof f> => f !== null);
+        (map.getSource('miss-lines') as maplibregl.GeoJSONSource | undefined)?.setData({
+          type: 'FeatureCollection',
+          features: lineFeatures,
+        });
+
         for (const pin of revealPins) {
           const el = document.createElement('div');
           el.className = 'fa-guess';
           const tag = document.createElement('div');
           tag.className = 'fa-guess-tag';
-          tag.textContent = pin.km != null ? `${pin.label} · ${formatKm(pin.km)}` : pin.label;
+          if (pin.km == null) {
+            tag.textContent = pin.label;
+          } else if (pin.km <= 0) {
+            tag.textContent = `${pin.label} · Direct hit! 🎯`;
+          } else {
+            const where = pin.pinned ? `📍 ${pin.pinned}` : '🌊 open sea';
+            tag.textContent = `${pin.label} · ${formatKm(pin.km)} · ${where}`;
+          }
           const dot = document.createElement('div');
           dot.className = pin.token ? 'fa-guess-tok' : 'fa-guess-dot';
           dot.style.background = pin.color;
@@ -192,6 +236,7 @@ export default function MapView({
       } else {
         map.setFilter('hl-fill', ['==', ['get', 'iso'], '__none__']);
         map.setFilter('hl-line', ['==', ['get', 'iso'], '__none__']);
+        (map.getSource('miss-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC as never);
       }
     };
 

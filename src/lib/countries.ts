@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { Feature, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
+import bbox from '@turf/bbox';
+import { booleanPointInPolygon } from '@turf/boolean-point-in-polygon';
+import { nearestPointOnLine } from '@turf/nearest-point-on-line';
+import { polygonToLine } from '@turf/polygon-to-line';
+import { point } from '@turf/helpers';
 
 export type CountryFeature = Feature<
   Polygon | MultiPolygon,
@@ -109,4 +114,44 @@ export function flagUrl(iso: string, width: 320 | 640 = 640): string {
 export function preloadFlag(iso: string): void {
   const img = new Image();
   img.src = flagUrl(iso);
+}
+
+// ── reverse lookup: which country contains a point? ──────────────────────────
+let bboxes: Map<CountryFeature, [number, number, number, number]> | null = null;
+
+export function countryAt(lat: number, lng: number): { iso: string; name: string } | null {
+  if (!cache) return null;
+  if (!bboxes) {
+    bboxes = new Map();
+    for (const f of cache.fc.features as CountryFeature[]) {
+      bboxes.set(f, bbox(f) as [number, number, number, number]);
+    }
+  }
+  const p = point([lng, lat]);
+  for (const [f, [w, s, e, n]] of bboxes) {
+    if (lng < w || lng > e || lat < s || lat > n) continue;
+    if (booleanPointInPolygon(p, f)) {
+      return { iso: f.properties.iso, name: f.properties.name || f.properties.iso.toUpperCase() };
+    }
+  }
+  return null;
+}
+
+/** Closest point on a country's border to the given location (for miss lines). */
+export function nearestPointOnCountry(lat: number, lng: number, iso: string): [number, number] | null {
+  const feature = cache?.byIso.get(iso);
+  if (!feature) return null;
+  const lines = polygonToLine(feature);
+  const features = 'features' in lines ? lines.features : [lines];
+  let best: [number, number] | null = null;
+  let bestDist = Infinity;
+  for (const line of features) {
+    const np = nearestPointOnLine(line, point([lng, lat]), { units: 'kilometers' });
+    const d = np.properties.dist ?? Infinity;
+    if (d < bestDist) {
+      bestDist = d;
+      best = [np.geometry.coordinates[0], np.geometry.coordinates[1]];
+    }
+  }
+  return best;
 }

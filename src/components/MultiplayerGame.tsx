@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useStore } from '../lib/store';
-import { countryName, useCountries } from '../lib/countries';
+import { countryAt, countryName, useCountries } from '../lib/countries';
+import FactBlast from './FactBlast';
 import { formatKm } from '../lib/scoring';
 import { leave, playAgain, playerColor, submitGuess } from '../lib/mp';
 import { getColor, getToken, myId } from '../lib/profile';
@@ -85,6 +86,7 @@ export default function MultiplayerGame() {
           color: r.color ?? playerColor(r.id),
           km: r.km,
           token: r.token,
+          pinned: countryAt(r.lat, r.lng)?.name ?? null,
         })),
     [results],
   );
@@ -240,6 +242,7 @@ export default function MultiplayerGame() {
               <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">It was </span>
               <span className="text-lg font-black text-white">{countryName(round.iso)}</span>
             </div>
+            {(results.find((r) => r.isMe)?.km ?? 1) <= 0 && <FactBlast iso={round.iso} />}
             <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
               {results.map((r, idx) => (
                 <motion.div
