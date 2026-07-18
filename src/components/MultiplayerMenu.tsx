@@ -4,6 +4,7 @@ import { useStore } from '../lib/store';
 import { createLobby, joinLobby } from '../lib/mp';
 import { randomName } from '../lib/names';
 import { mpConfigured } from '../lib/config';
+import TokenPicker from './TokenPicker';
 
 const NAME_KEY = 'fa-name';
 
@@ -62,6 +63,8 @@ export default function MultiplayerMenu() {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
+
+        <TokenPicker />
 
         <button
           className="btn-primary w-full py-4 text-lg mb-6"

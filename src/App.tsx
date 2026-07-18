@@ -8,6 +8,7 @@ import MultiplayerMenu from './components/MultiplayerMenu';
 import WaitingRoom from './components/WaitingRoom';
 import MultiplayerGame from './components/MultiplayerGame';
 import ErrorToast from './components/ErrorToast';
+import SettingsFab from './components/SettingsFab';
 
 const SCREENS = {
   landing: Landing,
@@ -23,6 +24,7 @@ export default function App() {
   const Screen = SCREENS[screen];
 
   useEffect(() => {
+    document.documentElement.dataset.theme = useStore.getState().theme;
     void loadCountries();
     void loadFacts();
     // deep link: ?join=CODE goes straight to the multiplayer menu
@@ -45,6 +47,7 @@ export default function App() {
         </motion.div>
       </AnimatePresence>
       <ErrorToast />
+      <SettingsFab />
     </div>
   );
 }

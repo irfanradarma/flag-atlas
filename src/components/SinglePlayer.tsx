@@ -4,10 +4,13 @@ import { useStore } from '../lib/store';
 import { countryName, pickRoundCountries, useCountries } from '../lib/countries';
 import { distanceToCountry, formatKm, scoreFromDistance } from '../lib/scoring';
 import { SCORE_MAX } from '../lib/config';
+import { getColor, getToken } from '../lib/profile';
+import { sfx } from '../lib/sound';
 import MapView from './MapView';
 import FlagCard from './FlagCard';
 import ExitButton from './ExitButton';
 import Loader from './Loader';
+import TokenPicker from './TokenPicker';
 
 interface RoundResult {
   iso: string;
@@ -43,14 +46,17 @@ export default function SinglePlayer() {
     setPin(null);
     setStage('play');
     setResetKey((k) => k + 1);
+    sfx.round();
   };
 
   const confirm = () => {
     if (!pin) return;
     const iso = plan[i];
     const km = distanceToCountry(pin.lat, pin.lng, iso);
-    setResults((r) => [...r, { iso, lat: pin.lat, lng: pin.lng, km, score: scoreFromDistance(km) }]);
+    const score = scoreFromDistance(km);
+    setResults((r) => [...r, { iso, lat: pin.lat, lng: pin.lng, km, score }]);
     setStage('reveal');
+    sfx.reveal(score);
   };
 
   const next = () => {
@@ -59,11 +65,13 @@ export default function SinglePlayer() {
       setPin(null);
       setStage('play');
       setResetKey((k) => k + 1);
+      sfx.round();
     } else {
       const key = BEST_KEY + plan.length;
       const best = Number(localStorage.getItem(key) ?? 0);
       if (total > best) localStorage.setItem(key, String(total));
       setStage('done');
+      sfx.fanfare();
     }
   };
 
@@ -78,14 +86,22 @@ export default function SinglePlayer() {
           countries={countries}
           interactive={stage === 'play'}
           myPin={pin}
-          onPlacePin={(lat, lng) => setPin({ lat, lng })}
+          onPlacePin={(lat, lng) => {
+            setPin({ lat, lng });
+            sfx.place();
+          }}
           revealIso={stage === 'reveal' ? plan[i] : null}
           revealPins={
             stage === 'reveal' && current
-              ? [{ id: 'me', label: 'You', lat: current.lat, lng: current.lng, color: '#fbbf24', km: current.km }]
+              ? [{
+                  id: 'me', label: 'You', lat: current.lat, lng: current.lng,
+                  color: getColor(), km: current.km, token: getToken(),
+                }]
               : []
           }
           resetKey={resetKey}
+          myToken={getToken()}
+          myColor={getColor()}
         />
       )}
 
@@ -100,10 +116,13 @@ export default function SinglePlayer() {
             <div className="glass rounded-3xl p-8 max-w-md w-full text-center">
               <div className="text-5xl mb-4">🧭</div>
               <h2 className="text-2xl font-extrabold text-white mb-2">Solo Journey</h2>
-              <p className="text-slate-400 text-sm mb-6">
+              <p className="text-slate-400 text-sm mb-5">
                 A flag appears — tap the world map where you think that country is,
                 then confirm. Land inside the country for a perfect {SCORE_MAX.toLocaleString()}.
               </p>
+              <div className="text-left">
+                <TokenPicker />
+              </div>
               <div className="flex gap-3">
                 <button className="btn-primary flex-1 py-3" onClick={() => start(5)}>5 rounds</button>
                 <button className="btn-secondary flex-1 py-3" onClick={() => start(10)}>10 rounds</button>

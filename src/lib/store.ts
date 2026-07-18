@@ -4,9 +4,13 @@ import type {
 } from './types';
 import { DEFAULT_ROUNDS, DEFAULT_SECONDS } from './config';
 
+export type Theme = 'dark' | 'light';
+
 interface AppState {
   screen: Screen;
   error: string | null;
+  theme: Theme;
+  setTheme: (t: Theme) => void;
 
   // Multiplayer state (written by lib/mp.ts)
   phase: MpPhase;
@@ -29,6 +33,12 @@ interface AppState {
 export const useStore = create<AppState>((set) => ({
   screen: 'landing',
   error: null,
+  theme: (localStorage.getItem('fa-theme') as Theme) ?? 'dark',
+  setTheme: (theme) => {
+    localStorage.setItem('fa-theme', theme);
+    document.documentElement.dataset.theme = theme;
+    set({ theme });
+  },
 
   phase: 'idle',
   code: '',

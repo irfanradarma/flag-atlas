@@ -4,11 +4,12 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import bbox from '@turf/bbox';
 import type { CountryData } from '../lib/countries';
 import { formatKm } from '../lib/scoring';
+import { useStore } from '../lib/store';
 
-const OCEAN = '#0b1526';
-const LAND = '#2e4160';
-const LAND_LINE = '#0b1526';
-const HIGHLIGHT = '#34d399';
+const THEMES = {
+  dark: { ocean: '#0b1526', land: '#2e4160', line: '#0b1526', hl: '#34d399' },
+  light: { ocean: '#c9dbeb', land: '#f3ecda', line: '#93a5b8', hl: '#10b981' },
+} as const;
 
 export interface RevealPin {
   id: string;
@@ -17,6 +18,7 @@ export interface RevealPin {
   lng: number;
   color: string;
   km: number | null;
+  token?: string;
 }
 
 interface Props {
@@ -28,6 +30,8 @@ interface Props {
   revealPins: RevealPin[];
   /** bump to re-center the world view for a new round */
   resetKey: number;
+  myToken?: string;
+  myColor?: string;
 }
 
 function normalizeLng(lng: number): number {
@@ -36,7 +40,9 @@ function normalizeLng(lng: number): number {
 
 export default function MapView({
   countries, interactive, myPin, onPlacePin, revealIso, revealPins, resetKey,
+  myToken, myColor,
 }: Props) {
+  const theme = useStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const myMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -49,6 +55,7 @@ export default function MapView({
   // init once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
+    const c = THEMES[useStore.getState().theme];
     const map = new maplibregl.Map({
       container: containerRef.current,
       attributionControl: { compact: true, customAttribution: 'Natural Earth' },
@@ -58,24 +65,24 @@ export default function MapView({
           countries: { type: 'geojson', data: countries.fc as never, tolerance: 0 },
         },
         layers: [
-          { id: 'bg', type: 'background', paint: { 'background-color': OCEAN } },
+          { id: 'bg', type: 'background', paint: { 'background-color': c.ocean } },
           {
             id: 'land', type: 'fill', source: 'countries',
-            paint: { 'fill-color': LAND, 'fill-opacity': 1 },
+            paint: { 'fill-color': c.land, 'fill-opacity': 1 },
           },
           {
             id: 'borders', type: 'line', source: 'countries',
-            paint: { 'line-color': LAND_LINE, 'line-width': 0.8 },
+            paint: { 'line-color': c.line, 'line-width': 0.8 },
           },
           {
             id: 'hl-fill', type: 'fill', source: 'countries',
             filter: ['==', ['get', 'iso'], '__none__'],
-            paint: { 'fill-color': HIGHLIGHT, 'fill-opacity': 0.45 },
+            paint: { 'fill-color': c.hl, 'fill-opacity': 0.45 },
           },
           {
             id: 'hl-line', type: 'line', source: 'countries',
             filter: ['==', ['get', 'iso'], '__none__'],
-            paint: { 'line-color': HIGHLIGHT, 'line-width': 2 },
+            paint: { 'line-color': c.hl, 'line-width': 2 },
           },
         ],
       },
@@ -103,6 +110,22 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // theme change → recolor base layers
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const c = THEMES[theme];
+    const apply = () => {
+      map.setPaintProperty('bg', 'background-color', c.ocean);
+      map.setPaintProperty('land', 'fill-color', c.land);
+      map.setPaintProperty('borders', 'line-color', c.line);
+      map.setPaintProperty('hl-fill', 'fill-color', c.hl);
+      map.setPaintProperty('hl-line', 'line-color', c.hl);
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+  }, [theme]);
+
   // my pin marker
   useEffect(() => {
     const map = mapRef.current;
@@ -111,7 +134,8 @@ export default function MapView({
       if (!myMarkerRef.current) {
         const el = document.createElement('div');
         el.className = 'fa-pin';
-        el.innerHTML = '<div class="fa-pin-dot"></div><div class="fa-pin-pulse"></div>';
+        const color = myColor ?? '#fbbf24';
+        el.innerHTML = `<div class="fa-pin-tok" style="background:${color}">${myToken ?? ''}</div><div class="fa-pin-pulse" style="border-color:${color}"></div>`;
         myMarkerRef.current = new maplibregl.Marker({ element: el, anchor: 'center' })
           .setLngLat([myPin.lng, myPin.lat])
           .addTo(map);
@@ -122,7 +146,7 @@ export default function MapView({
       myMarkerRef.current.remove();
       myMarkerRef.current = null;
     }
-  }, [myPin]);
+  }, [myPin, myToken, myColor]);
 
   // reveal: highlight country, drop everyone's pins, fit view
   useEffect(() => {
@@ -144,8 +168,9 @@ export default function MapView({
           tag.className = 'fa-guess-tag';
           tag.textContent = pin.km != null ? `${pin.label} · ${formatKm(pin.km)}` : pin.label;
           const dot = document.createElement('div');
-          dot.className = 'fa-guess-dot';
+          dot.className = pin.token ? 'fa-guess-tok' : 'fa-guess-dot';
           dot.style.background = pin.color;
+          if (pin.token) dot.textContent = pin.token;
           el.append(dot, tag);
           revealMarkersRef.current.push(
             new maplibregl.Marker({ element: el, anchor: 'center' })

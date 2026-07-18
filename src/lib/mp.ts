@@ -4,6 +4,7 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL, mpConfigured, REVEAL_PAUSE_MS } from '
 import { loadCountries, pickRoundCountries, preloadFlag } from './countries';
 import { distanceToCountry, scoreFromDistance } from './scoring';
 import { colorFor } from './names';
+import { getColor, getToken, myId } from './profile';
 import { useStore } from './store';
 import type { GuessEntry, MpSettings, PlayerInfo, ResultEntry } from './types';
 
@@ -36,13 +37,10 @@ function genCode(): string {
   return s;
 }
 
-export function myId(): string {
-  let id = sessionStorage.getItem('fa-player-id');
-  if (!id) {
-    id = crypto.randomUUID();
-    sessionStorage.setItem('fa-player-id', id);
-  }
-  return id;
+export { myId };
+
+function myPresence(asHost: boolean, playing: boolean) {
+  return { name: me!.name, host: asHost, playing, token: getToken(), color: getColor() };
 }
 
 type StoreState = ReturnType<typeof useStore.getState>;
@@ -78,12 +76,16 @@ function getClient(): SupabaseClient {
 
 function readPlayers(): PlayerInfo[] {
   if (!channel) return [];
-  const state = channel.presenceState<{ name: string; host: boolean; playing: boolean }>();
+  const state = channel.presenceState<{
+    name: string; host: boolean; playing: boolean; token?: string; color?: string;
+  }>();
   return Object.entries(state).map(([id, metas]) => ({
     id,
     name: metas[0]?.name ?? 'Explorer',
     host: metas[0]?.host ?? false,
     playing: metas[0]?.playing ?? false,
+    token: metas[0]?.token,
+    color: metas[0]?.color,
   }));
 }
 
@@ -147,7 +149,7 @@ async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'not-f
 
   channel = ch;
   isHost = asHost;
-  await ch.track({ name: me!.name, host: asHost, playing: false });
+  await ch.track(myPresence(asHost, false));
 
   if (asHost) {
     // Brief settle to detect an (astronomically unlikely) code collision.
@@ -249,7 +251,7 @@ export function startGame(s: MpSettings): void {
   collected = new Map();
   revealSent = new Set();
   set({ settings: s, totals: {} });
-  void channel.track({ name: me!.name, host: true, playing: true });
+  void channel.track(myPresence(true, true));
   sendRound(0);
 }
 
@@ -261,13 +263,16 @@ export function submitGuess(lat: number, lng: number): void {
   void channel.send({
     type: 'broadcast',
     event: 'guess',
-    payload: { i: st.round.i, id: me!.id, name: me!.name, lat, lng },
+    payload: {
+      i: st.round.i, id: me!.id, name: me!.name, lat, lng,
+      token: getToken(), color: getColor(),
+    },
   });
 }
 
 export function playAgain(): void {
   if (!channel || !isHost) return;
-  void channel.track({ name: me!.name, host: true, playing: false });
+  void channel.track(myPresence(true, false));
   void channel.send({ type: 'broadcast', event: 'again', payload: {} });
 }
 
@@ -302,7 +307,9 @@ function fireReveal(i: number) {
   const got = collected.get(i) ?? new Map<string, GuessEntry>();
   // Players present but silent get a null guess (0 points).
   for (const p of useStore.getState().players) {
-    if (!got.has(p.id)) got.set(p.id, { id: p.id, name: p.name, lat: null, lng: null });
+    if (!got.has(p.id)) {
+      got.set(p.id, { id: p.id, name: p.name, lat: null, lng: null, token: p.token, color: p.color });
+    }
   }
   void channel.send({
     type: 'broadcast',
@@ -334,14 +341,17 @@ function onRound(p: { i: number; total: number; iso: string; endsAt: number }) {
   });
 }
 
-function onGuess(p: { i: number; id: string; name: string; lat: number; lng: number }) {
+function onGuess(p: {
+  i: number; id: string; name: string; lat: number; lng: number;
+  token?: string; color?: string;
+}) {
   const st = useStore.getState();
   if (!st.round || p.i !== st.round.i) return;
   if (!st.guessedIds.includes(p.id)) set({ guessedIds: [...st.guessedIds, p.id] });
   if (isHost) {
     const got = collected.get(p.i);
     if (got && !got.has(p.id)) {
-      got.set(p.id, { id: p.id, name: p.name, lat: p.lat, lng: p.lng });
+      got.set(p.id, { id: p.id, name: p.name, lat: p.lat, lng: p.lng, token: p.token, color: p.color });
       maybeReveal(p.i);
     }
   }
@@ -361,6 +371,8 @@ async function onReveal(p: { i: number; iso: string; guesses: GuessEntry[] }) {
         km,
         score: km != null ? scoreFromDistance(km) : 0,
         isMe: g.id === myIdV,
+        token: g.token,
+        color: g.color ?? colorFor(g.id),
       };
     })
     .sort((a, b) => b.score - a.score);

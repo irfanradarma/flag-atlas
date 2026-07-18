@@ -3,7 +3,9 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useStore } from '../lib/store';
 import { countryName, useCountries } from '../lib/countries';
 import { formatKm } from '../lib/scoring';
-import { leave, myId, playAgain, playerColor, submitGuess } from '../lib/mp';
+import { leave, playAgain, playerColor, submitGuess } from '../lib/mp';
+import { getColor, getToken, myId } from '../lib/profile';
+import { sfx } from '../lib/sound';
 import { useIdleGuard } from '../lib/useIdleGuard';
 import type { RevealPin } from './MapView';
 import MapView from './MapView';
@@ -43,8 +45,24 @@ export default function MultiplayerGame() {
     if (phase === 'round') {
       setPin(null);
       setResetKey((k) => k + 1);
+      sfx.round();
     }
   }, [phase, round?.i]);
+
+  // reveal / final jingles
+  useEffect(() => {
+    if (phase === 'reveal' && results) {
+      sfx.reveal(results.find((r) => r.isMe)?.score ?? 0);
+    }
+    if (phase === 'final') sfx.fanfare();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // countdown ticks in the last five seconds
+  const secLeft = Math.ceil(msLeft / 1000);
+  useEffect(() => {
+    if (phase === 'round' && secLeft > 0 && secLeft <= 5) sfx.tick();
+  }, [phase, secLeft]);
 
   const revealPins: RevealPin[] = useMemo(
     () =>
@@ -55,17 +73,23 @@ export default function MultiplayerGame() {
           label: r.isMe ? 'You' : r.name,
           lat: r.lat,
           lng: r.lng,
-          color: playerColor(r.id),
+          color: r.color ?? playerColor(r.id),
           km: r.km,
+          token: r.token,
         })),
     [results],
   );
 
   const standings = useMemo(() => {
-    const nameOf = new Map(players.map((p) => [p.id, p.name]));
-    for (const r of results ?? []) if (!nameOf.has(r.id)) nameOf.set(r.id, r.name);
+    const infoOf = new Map(players.map((p) => [p.id, { name: p.name, token: p.token, color: p.color }]));
+    for (const r of results ?? []) {
+      if (!infoOf.has(r.id)) infoOf.set(r.id, { name: r.name, token: r.token, color: r.color });
+    }
     return Object.entries(totals)
-      .map(([id, score]) => ({ id, score, name: nameOf.get(id) ?? 'Explorer' }))
+      .map(([id, score]) => ({
+        id, score,
+        ...(infoOf.get(id) ?? { name: 'Explorer', token: undefined, color: undefined }),
+      }))
       .sort((a, b) => b.score - a.score);
   }, [totals, players, results]);
 
@@ -81,7 +105,12 @@ export default function MultiplayerGame() {
           countries={countries}
           interactive={phase === 'round' && !locked}
           myPin={phase === 'round' ? pin : null}
-          onPlacePin={(lat, lng) => setPin({ lat, lng })}
+          onPlacePin={(lat, lng) => {
+            setPin({ lat, lng });
+            sfx.place();
+          }}
+          myToken={getToken()}
+          myColor={getColor()}
           revealIso={phase === 'reveal' ? round.iso : null}
           revealPins={phase === 'reveal' ? revealPins : []}
           resetKey={resetKey}
@@ -143,7 +172,13 @@ export default function MultiplayerGame() {
                 ✅ Locked in! Waiting for the others…
               </div>
             ) : pin ? (
-              <button className="btn-primary w-full py-4 text-lg" onClick={() => submitGuess(pin.lat, pin.lng)}>
+              <button
+                className="btn-primary w-full py-4 text-lg"
+                onClick={() => {
+                  submitGuess(pin.lat, pin.lng);
+                  sfx.lock();
+                }}
+              >
                 Lock it in 🎯
               </button>
             ) : (
@@ -181,7 +216,12 @@ export default function MultiplayerGame() {
                     r.isMe ? 'bg-amber-400/10 border border-amber-400/25' : 'bg-white/5'
                   }`}
                 >
-                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: playerColor(r.id) }} />
+                  <span
+                    className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-xs border border-black/20"
+                    style={{ background: r.color ?? playerColor(r.id) }}
+                  >
+                    {r.token ?? ''}
+                  </span>
                   <span className="font-bold text-white text-sm flex-1 truncate">
                     {r.isMe ? 'You' : r.name}
                   </span>
@@ -229,7 +269,12 @@ export default function MultiplayerGame() {
                     }`}
                   >
                     <span className="text-xl w-8">{['🥇', '🥈', '🥉'][idx] ?? `${idx + 1}.`}</span>
-                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: playerColor(p.id) }} />
+                    <span
+                      className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-sm border border-black/20"
+                      style={{ background: p.color ?? playerColor(p.id) }}
+                    >
+                      {p.token ?? ''}
+                    </span>
                     <span className="font-bold text-white flex-1 text-left truncate">
                       {p.name}
                       {p.id === myId() && <span className="text-slate-500 font-semibold"> (you)</span>}

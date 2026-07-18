@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
 import { useStore } from '../lib/store';
-import { leave, myId, playerColor, startGame } from '../lib/mp';
+import { leave, playerColor, startGame } from '../lib/mp';
+import { myId } from '../lib/profile';
 import { useIdleGuard } from '../lib/useIdleGuard';
 import IdleModal from './IdleModal';
 
@@ -92,7 +93,12 @@ export default function WaitingRoom() {
                 animate={{ opacity: 1, x: 0 }}
                 className="flex items-center gap-3 bg-white/5 rounded-xl px-4 py-2.5"
               >
-                <span className="w-3 h-3 rounded-full shrink-0" style={{ background: playerColor(p.id) }} />
+                <span
+                  className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-sm border border-black/20"
+                  style={{ background: p.color ?? playerColor(p.id) }}
+                >
+                  {p.token ?? ''}
+                </span>
                 <span className="font-bold text-white flex-1 truncate">
                   {p.name}
                   {p.id === myId() && <span className="text-slate-500 font-semibold"> (you)</span>}

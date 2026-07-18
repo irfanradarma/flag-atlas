@@ -3,6 +3,8 @@ export interface PlayerInfo {
   name: string;
   host: boolean;
   playing: boolean;
+  token?: string;
+  color?: string;
 }
 
 export interface RoundInfo {
@@ -17,6 +19,8 @@ export interface GuessEntry {
   name: string;
   lat: number | null;
   lng: number | null;
+  token?: string;
+  color?: string;
 }
 
 export interface ResultEntry {
@@ -27,6 +31,8 @@ export interface ResultEntry {
   km: number | null;
   score: number;
   isMe: boolean;
+  token?: string;
+  color?: string;
 }
 
 export interface MpSettings {
