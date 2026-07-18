@@ -54,7 +54,23 @@ function myPresence(asHost: boolean, playing: boolean, spectator = false) {
   return {
     name: me!.name, host: asHost, playing, spectator,
     token: getToken(), color: getColor(),
+    // Lets readers pick the newest meta when re-tracks briefly leave
+    // stale+fresh payloads side by side (array order is not guaranteed).
+    ts: Date.now(),
   };
+}
+
+/** Deliver a broadcast with server ack + retries — plain send is fire-and-forget
+ *  and silently drops on flaky connections (lost guesses / missed reveals). */
+async function sendReliable(event: string, payload: object): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!channel) return;
+    try {
+      const res = await channel.send({ type: 'broadcast', event, payload });
+      if (res === 'ok') return;
+    } catch { /* retry */ }
+    await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+  }
 }
 
 const isPlayingPhase = (p: string) => p === 'round' || p === 'reveal' || p === 'final';
@@ -207,12 +223,12 @@ function readPlayers(): PlayerInfo[] {
   if (!channel) return [];
   const state = channel.presenceState<{
     name: string; host: boolean; playing: boolean; token?: string; color?: string;
-    spectator?: boolean;
+    spectator?: boolean; ts?: number;
   }>();
   // A re-track (e.g. host flipping `playing`, spectator converting) can briefly
-  // leave old+new metas side by side — the newest meta is authoritative.
+  // leave old+new metas side by side — the newest (highest ts) is authoritative.
   return Object.entries(state).map(([id, metas]) => {
-    const m = metas[metas.length - 1];
+    const m = metas.reduce((a, b) => ((b?.ts ?? 0) >= (a?.ts ?? 0) ? b : a), metas[0]);
     return {
       id,
       name: m?.name ?? 'Explorer',
@@ -269,7 +285,7 @@ function attachHandlers(ch: RealtimeChannel) {
 async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'spectate' | 'not-found' | 'taken' | 'error'> {
   const supa = getClient();
   const ch = supa.channel(`room:${code}`, {
-    config: { broadcast: { self: true }, presence: { key: me!.id } },
+    config: { broadcast: { self: true, ack: true }, presence: { key: me!.id } },
   });
   attachHandlers(ch);
 
@@ -389,6 +405,7 @@ export async function leave(backToMenu = true): Promise<void> {
   clearTimers();
   collected = new Map();
   revealSent = new Set();
+  revealsSeen = new Set();
   roundPlan = [];
   isHost = false;
   isPublic = false;
@@ -404,6 +421,7 @@ export function startGame(s: MpSettings): void {
   roundPlan = pickRoundCountries(s.rounds);
   collected = new Map();
   revealSent = new Set();
+  revealsSeen = new Set();
   set({ settings: s, totals: {} });
   void channel.track(myPresence(true, true));
   updateDirectory(true);
@@ -415,21 +433,21 @@ export function submitGuess(lat: number, lng: number): void {
   if (!channel || !st.round || st.phase !== 'round') return;
   if (st.guessedIds.includes(me!.id)) return;
   set({ myGuess: { lat, lng } });
-  void channel.send({
-    type: 'broadcast',
-    event: 'guess',
-    payload: {
-      i: st.round.i, id: me!.id, name: me!.name, lat, lng,
-      token: getToken(), color: getColor(),
-    },
-  });
+  const payload = {
+    i: st.round.i, id: me!.id, name: me!.name, lat, lng,
+    token: getToken(), color: getColor(),
+  };
+  // Process locally first — never depend on receiving our own echo.
+  onGuess(payload);
+  void sendReliable('guess', payload);
 }
 
 export function playAgain(): void {
   if (!channel || !isHost) return;
   void channel.track(myPresence(true, false));
   updateDirectory(false);
-  void channel.send({ type: 'broadcast', event: 'again', payload: {} });
+  void sendReliable('again', {});
+  onAgain(); // local-first; guests get the broadcast
 }
 
 // ── host round orchestration ─────────────────────────────────────────────────
@@ -439,11 +457,11 @@ function sendRound(i: number) {
   const iso = roundPlan[i];
   const endsAt = Date.now() + settings.seconds * 1000;
   collected.set(i, new Map());
-  void channel.send({
-    type: 'broadcast',
-    event: 'round',
-    payload: { i, total: settings.rounds, iso, endsAt },
-  });
+  const payload = { i, total: settings.rounds, iso, endsAt };
+  onRound(payload); // host processes locally, never waits for its own echo
+  void sendReliable('round', payload);
+  // second delivery for clients whose first copy got lost (handlers dedupe)
+  setTimeout(() => void sendReliable('round', payload), 1500);
   clearTimeout(roundTimer);
   roundTimer = setTimeout(() => fireReveal(i), endsAt - Date.now() + 500);
 }
@@ -468,11 +486,10 @@ function fireReveal(i: number) {
       got.set(p.id, { id: p.id, name: p.name, lat: null, lng: null, token: p.token, color: p.color });
     }
   }
-  void channel.send({
-    type: 'broadcast',
-    event: 'reveal',
-    payload: { i, iso: roundPlan[i], guesses: [...got.values()] },
-  });
+  const payload = { i, iso: roundPlan[i], guesses: [...got.values()] };
+  void onReveal(payload); // local-first
+  void sendReliable('reveal', payload);
+  setTimeout(() => void sendReliable('reveal', payload), 1200);
   advanceTimer = setTimeout(() => {
     if (i + 1 < settings.rounds) sendRound(i + 1);
     else sendFinal();
@@ -481,12 +498,20 @@ function fireReveal(i: number) {
 
 function sendFinal() {
   if (!channel) return;
-  void channel.send({ type: 'broadcast', event: 'final', payload: {} });
+  onFinal({}); // local-first
+  void sendReliable('final', {});
+  setTimeout(() => void sendReliable('final', {}), 1200);
 }
 
 // ── event handlers (all clients, host included via self-broadcast) ───────────
 
+let revealsSeen = new Set<number>();
+
 function onRound(p: { i: number; total: number; iso: string; endsAt: number }) {
+  const st = useStore.getState();
+  // duplicate delivery of the current round — don't reset local guess state
+  if (st.phase === 'round' && st.round?.i === p.i && st.round.iso === p.iso) return;
+  if (p.i === 0) revealsSeen = new Set();
   preloadFlag(p.iso);
   set({
     phase: 'round',
@@ -515,6 +540,8 @@ function onGuess(p: {
 }
 
 async function onReveal(p: { i: number; iso: string; guesses: GuessEntry[] }) {
+  if (revealsSeen.has(p.i)) return; // duplicate delivery
+  revealsSeen.add(p.i);
   await loadCountries();
   const myIdV = me?.id;
   const results: ResultEntry[] = p.guesses
@@ -536,7 +563,14 @@ async function onReveal(p: { i: number; iso: string; guesses: GuessEntry[] }) {
 
   const totals = { ...useStore.getState().totals };
   for (const r of results) totals[r.id] = (totals[r.id] ?? 0) + r.score;
-  set({ phase: 'reveal', results, totals });
+  // Self-healing: if this client missed the round broadcast, sync the round
+  // info from the reveal payload so the correct country gets highlighted.
+  const st = useStore.getState();
+  const round =
+    st.round && st.round.i === p.i && st.round.iso === p.iso
+      ? st.round
+      : { i: p.i, total: Math.max(st.round?.total ?? 0, p.i + 1), iso: p.iso, endsAt: null };
+  set({ phase: 'reveal', results, totals, round });
 }
 
 function onFinal(_p: unknown) {
@@ -544,8 +578,11 @@ function onFinal(_p: unknown) {
 }
 
 function onAgain() {
+  const st = useStore.getState();
+  if (st.phase === 'wait' && st.screen === 'mp-wait') return; // duplicate delivery
+  revealsSeen = new Set();
   // Spectators become full players once the lobby reopens.
-  if (useStore.getState().isSpectator && channel) {
+  if (st.isSpectator && channel) {
     void channel.track(myPresence(false, false, false));
   }
   set({
