@@ -29,6 +29,17 @@ const DIR_STALE_MS = 50_000;
 let gameNo = 0; // host: unique id per started game, rides round/reveal payloads
 let clientGame = -1; // all clients: the game id currently being played
 let roundPlan: string[] = [];
+
+// Host-side catch-up state: phones drop their websocket constantly (screen
+// dim, app switch, radio idle). Broadcasts sent during the gap are gone, so
+// reconnecting clients request a sync and replay what they missed.
+type RoundPayload = { g: number; i: number; total: number; iso: string; endsAt: number };
+type RevealPayload = { g: number; i: number; iso: string; guesses: GuessEntry[] };
+let currentRoundPayload: RoundPayload | null = null;
+let revealHistory: RevealPayload[] = [];
+let gameFinished = false;
+let lastSyncSent = 0;
+let lastSyncReq = 0;
 let settings: MpSettings = { rounds: 5, seconds: 45 };
 let collected = new Map<number, Map<string, GuessEntry>>();
 let revealSent = new Set<number>();
@@ -282,7 +293,47 @@ function attachHandlers(ch: RealtimeChannel) {
   ch.on('broadcast', { event: 'reveal' }, ({ payload }) => void onReveal(payload));
   ch.on('broadcast', { event: 'final' }, ({ payload }) => onFinal(payload));
   ch.on('broadcast', { event: 'again' }, () => onAgain());
+  ch.on('broadcast', { event: 'sync-req' }, () => hostSendSync());
+  ch.on('broadcast', { event: 'sync' }, ({ payload }) => void onSync(payload));
 }
+
+/** Host: answer a catch-up request with the game so far (rate-limited). */
+function hostSendSync() {
+  if (!isHost || !channel) return;
+  if (Date.now() - lastSyncSent < 800) return;
+  lastSyncSent = Date.now();
+  void sendReliable('sync', {
+    round: currentRoundPayload,
+    reveals: revealHistory,
+    final: gameFinished,
+  });
+}
+
+/** Client: replay missed events — dedupe guards make this idempotent. */
+async function onSync(p: { round?: RoundPayload | null; reveals?: RevealPayload[]; final?: boolean }) {
+  if (isHost || !p) return;
+  for (const r of p.reveals ?? []) await onReveal(r);
+  if (p.round) onRound(p.round);
+  if (p.final) onFinal({});
+}
+
+/** Client: ask the host for anything we missed (reconnects, tab refocus). */
+function requestSync(force = false) {
+  if (isHost || !channel) return;
+  const ph = useStore.getState().phase;
+  if (!force && ph !== 'round' && ph !== 'reveal' && ph !== 'final') return;
+  if (Date.now() - lastSyncReq < 1500) return;
+  lastSyncReq = Date.now();
+  void sendReliable('sync-req', { id: me?.id ?? '' });
+}
+
+// A phone coming back to the foreground may have silently missed broadcasts.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && channel && !isHost) {
+    const ph = useStore.getState().phase;
+    if (ph === 'round' || ph === 'reveal' || ph === 'final') requestSync();
+  }
+});
 
 async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'spectate' | 'not-found' | 'taken' | 'error'> {
   const supa = getClient();
@@ -291,10 +342,19 @@ async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'spect
   });
   attachHandlers(ch);
 
+  let joinedOnce = false;
   const subscribed = await new Promise<boolean>((resolve) => {
     const t = setTimeout(() => resolve(false), 8000);
     ch.subscribe((status) => {
-      if (status === 'SUBSCRIBED') { clearTimeout(t); resolve(true); }
+      if (status === 'SUBSCRIBED') {
+        if (joinedOnce) {
+          // websocket dropped and rejoined — catch up on missed broadcasts
+          setTimeout(() => requestSync(), 400);
+        }
+        joinedOnce = true;
+        clearTimeout(t);
+        resolve(true);
+      }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') { clearTimeout(t); resolve(false); }
     });
   });
@@ -396,6 +456,8 @@ export async function joinLobby(code: string, name: string): Promise<void> {
       screen: 'mp-game', phase: 'wait', code: code.toUpperCase(), isHost: false,
       totals: {}, results: null, round: null, isSpectator: true,
     });
+    // catch up on the game in progress right away
+    setTimeout(() => requestSync(true), 600);
   } else if (res === 'not-found') {
     set({ error: `Lobby "${code.toUpperCase()}" not found.` });
   } else {
@@ -426,6 +488,9 @@ export function startGame(s: MpSettings): void {
   collected = new Map();
   revealSent = new Set();
   revealsSeen = new Set();
+  revealHistory = [];
+  currentRoundPayload = null;
+  gameFinished = false;
   set({ settings: s, totals: {} });
   void channel.track(myPresence(true, true));
   updateDirectory(true);
@@ -448,6 +513,9 @@ export function submitGuess(lat: number, lng: number): void {
 
 export function playAgain(): void {
   if (!channel || !isHost) return;
+  currentRoundPayload = null;
+  revealHistory = [];
+  gameFinished = false;
   void channel.track(myPresence(true, false));
   updateDirectory(false);
   void sendReliable('again', {});
@@ -461,7 +529,8 @@ function sendRound(i: number) {
   const iso = roundPlan[i];
   const endsAt = Date.now() + settings.seconds * 1000;
   collected.set(i, new Map());
-  const payload = { g: gameNo, i, total: settings.rounds, iso, endsAt };
+  const payload: RoundPayload = { g: gameNo, i, total: settings.rounds, iso, endsAt };
+  currentRoundPayload = payload;
   onRound(payload); // host processes locally, never waits for its own echo
   void sendReliable('round', payload);
   // second delivery for clients whose first copy got lost (handlers dedupe)
@@ -490,7 +559,8 @@ function fireReveal(i: number) {
       got.set(p.id, { id: p.id, name: p.name, lat: null, lng: null, token: p.token, color: p.color });
     }
   }
-  const payload = { g: gameNo, i, iso: roundPlan[i], guesses: [...got.values()] };
+  const payload: RevealPayload = { g: gameNo, i, iso: roundPlan[i], guesses: [...got.values()] };
+  revealHistory.push(payload);
   void onReveal(payload); // local-first
   void sendReliable('reveal', payload);
   setTimeout(() => void sendReliable('reveal', payload), 1200);
@@ -502,6 +572,7 @@ function fireReveal(i: number) {
 
 function sendFinal() {
   if (!channel) return;
+  gameFinished = true;
   onFinal({}); // local-first
   void sendReliable('final', {});
   setTimeout(() => void sendReliable('final', {}), 1200);
