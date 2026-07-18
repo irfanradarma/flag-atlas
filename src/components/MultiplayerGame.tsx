@@ -26,8 +26,12 @@ function useCountdown(endsAt: number | null): number {
 
 export default function MultiplayerGame() {
   const countries = useCountries();
-  const { phase, round, players, guessedIds, myGuess, results, totals, isHost, settings } = useStore();
+  const {
+    phase, round, players, guessedIds, myGuess, results, totals, isHost, settings,
+    isSpectator, code,
+  } = useStore();
   const setScreen = useStore((s) => s.setScreen);
+  const activeCount = players.filter((p) => !p.spectator).length;
   const [pin, setPin] = useState<{ lat: number; lng: number } | null>(null);
   const [resetKey, setResetKey] = useState(0);
 
@@ -58,10 +62,15 @@ export default function MultiplayerGame() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // countdown ticks in the last five seconds
+  // countdown ticks — calm from 10s, urgent from 5s, frantic in the last 3s
   const secLeft = Math.ceil(msLeft / 1000);
   useEffect(() => {
-    if (phase === 'round' && secLeft > 0 && secLeft <= 5) sfx.tick();
+    if (phase !== 'round') return;
+    if (secLeft > 0 && secLeft <= 10) {
+      sfx.tick(secLeft <= 3 ? 2 : secLeft <= 5 ? 1 : 0);
+    } else if (secLeft === 0) {
+      sfx.timeUp();
+    }
   }, [phase, secLeft]);
 
   const revealPins: RevealPin[] = useMemo(
@@ -93,7 +102,29 @@ export default function MultiplayerGame() {
       .sort((a, b) => b.score - a.score);
   }, [totals, players, results]);
 
-  if (!countries || !round) return <Loader label="Getting ready…" />;
+  if (!countries) return <Loader label="Getting ready…" />;
+
+  // Spectator who joined mid-round: nothing to show until the next round starts.
+  if (!round) {
+    if (isSpectator) {
+      return (
+        <div className="h-full flex items-center justify-center px-6">
+          <div className="glass rounded-3xl p-8 max-w-sm w-full text-center">
+            <div className="text-5xl mb-3">👀</div>
+            <h2 className="text-xl font-extrabold text-white mb-2">Spectating {code}</h2>
+            <p className="text-sm text-slate-400 mb-6">
+              A game is in progress — you'll see the action from the next round,
+              and you'll play when the lobby reopens!
+            </p>
+            <button className="btn-secondary w-full py-3" onClick={() => void leave(true)}>
+              ← Leave
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return <Loader label="Getting ready…" />;
+  }
 
   const secondsTotal = settings.seconds * 1000;
   const frac = Math.min(1, msLeft / secondsTotal);
@@ -103,8 +134,8 @@ export default function MultiplayerGame() {
       {phase !== 'final' && (
         <MapView
           countries={countries}
-          interactive={phase === 'round' && !locked}
-          myPin={phase === 'round' ? pin : null}
+          interactive={phase === 'round' && !locked && !isSpectator}
+          myPin={phase === 'round' && !isSpectator ? pin : null}
           onPlacePin={(lat, lng) => {
             setPin({ lat, lng });
             sfx.place();
@@ -144,7 +175,7 @@ export default function MultiplayerGame() {
             <div className="glass rounded-2xl px-4 py-2 text-right">
               <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Locked in</div>
               <div className="text-lg font-black text-sky-300">
-                {guessedIds.length}/{players.length}
+                {guessedIds.length}/{activeCount}
               </div>
             </div>
             <ExitButton
@@ -167,7 +198,11 @@ export default function MultiplayerGame() {
             exit={{ opacity: 0, y: 30 }}
             className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 w-[min(92vw,380px)]"
           >
-            {locked ? (
+            {isSpectator ? (
+              <div className="glass rounded-2xl px-5 py-3 text-center text-sm font-bold text-sky-300">
+                👀 Spectating — you'll play when the lobby reopens
+              </div>
+            ) : locked ? (
               <div className="glass rounded-2xl px-5 py-3 text-center text-sm font-bold text-good">
                 ✅ Locked in! Waiting for the others…
               </div>

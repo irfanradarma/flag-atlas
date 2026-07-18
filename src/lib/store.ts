@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type {
-  MpPhase, MpSettings, PlayerInfo, ResultEntry, RoundInfo, Screen,
+  MpPhase, MpSettings, PlayerInfo, PublicLobby, ResultEntry, RoundInfo, Screen,
 } from './types';
 import { DEFAULT_ROUNDS, DEFAULT_SECONDS } from './config';
 
@@ -23,6 +23,8 @@ interface AppState {
   myGuess: { lat: number; lng: number } | null;
   results: ResultEntry[] | null;
   totals: Record<string, number>;
+  isSpectator: boolean;
+  publicLobbies: PublicLobby[];
 
   setScreen: (s: Screen) => void;
   setError: (e: string | null) => void;
@@ -50,6 +52,8 @@ export const useStore = create<AppState>((set) => ({
   myGuess: null,
   results: null,
   totals: {},
+  isSpectator: false,
+  publicLobbies: [],
 
   setScreen: (screen) => set({ screen }),
   setError: (error) => set({ error }),
@@ -65,5 +69,6 @@ export const useStore = create<AppState>((set) => ({
       myGuess: null,
       results: null,
       totals: {},
+      isSpectator: false,
     }),
 }));

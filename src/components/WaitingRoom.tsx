@@ -83,10 +83,15 @@ export default function WaitingRoom() {
 
         <div className="mb-6">
           <div className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-3">
-            Explorers ({players.length})
+            Explorers ({players.filter((p) => !p.spectator).length})
+            {players.some((p) => p.spectator) && (
+              <span className="text-slate-500 normal-case tracking-normal">
+                {' '}· 👀 {players.filter((p) => p.spectator).length} watching
+              </span>
+            )}
           </div>
           <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-            {players.map((p) => (
+            {players.filter((p) => !p.spectator).map((p) => (
               <motion.div
                 key={p.id}
                 initial={{ opacity: 0, x: -12 }}

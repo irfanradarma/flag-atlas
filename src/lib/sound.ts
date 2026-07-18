@@ -77,8 +77,15 @@ export const sfx = {
   fanfare(): void {
     [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.22, { type: 'triangle', gain: 0.13, delay: i * 0.11 }));
   },
-  /** countdown tick (last seconds) */
-  tick(): void {
-    tone(950, 0.04, { type: 'square', gain: 0.06 });
+  /** countdown tick — urgency 0 (calm) → 2 (frantic double-tick) */
+  tick(urgency: 0 | 1 | 2 = 0): void {
+    const freq = urgency === 2 ? 1400 : urgency === 1 ? 1100 : 850;
+    const gain = urgency === 2 ? 0.12 : urgency === 1 ? 0.085 : 0.055;
+    tone(freq, 0.045, { type: 'square', gain });
+    if (urgency === 2) tone(freq, 0.045, { type: 'square', gain, delay: 0.1 });
+  },
+  /** timer hit zero */
+  timeUp(): void {
+    tone(240, 0.35, { type: 'sawtooth', gain: 0.09, glideTo: 170 });
   },
 };

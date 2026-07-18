@@ -5,6 +5,14 @@ export interface PlayerInfo {
   playing: boolean;
   token?: string;
   color?: string;
+  spectator?: boolean;
+}
+
+export interface PublicLobby {
+  code: string;
+  host: string;
+  players: number;
+  playing: boolean;
 }
 
 export interface RoundInfo {

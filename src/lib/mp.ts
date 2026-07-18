@@ -13,6 +13,17 @@ let client: SupabaseClient | null = null;
 let channel: RealtimeChannel | null = null;
 let me: { id: string; name: string } | null = null;
 let isHost = false;
+let isPublic = false;
+let dirChannel: RealtimeChannel | null = null;
+let dirHeartbeat: ReturnType<typeof setInterval> | undefined;
+let browseChannel: RealtimeChannel | null = null;
+let browsePrune: ReturnType<typeof setInterval> | undefined;
+
+const DIRECTORY = 'public-lobbies';
+// Hosts refresh their listing every 20s; browsers drop entries not refreshed
+// within 50s — heals ghost listings if a presence leave diff is ever missed.
+const DIR_HEARTBEAT_MS = 20_000;
+const DIR_STALE_MS = 50_000;
 
 // host-only round orchestration
 let roundPlan: string[] = [];
@@ -39,8 +50,126 @@ function genCode(): string {
 
 export { myId };
 
-function myPresence(asHost: boolean, playing: boolean) {
-  return { name: me!.name, host: asHost, playing, token: getToken(), color: getColor() };
+function myPresence(asHost: boolean, playing: boolean, spectator = false) {
+  return {
+    name: me!.name, host: asHost, playing, spectator,
+    token: getToken(), color: getColor(),
+  };
+}
+
+const isPlayingPhase = (p: string) => p === 'round' || p === 'reveal' || p === 'final';
+
+/** Host of a public lobby advertises it on the shared directory channel. */
+function updateDirectory(playingOverride?: boolean) {
+  if (!dirChannel || !isHost || !isPublic) return;
+  const st = useStore.getState();
+  void dirChannel.track({
+    host: me?.name ?? 'Host',
+    players: Math.max(1, st.players.filter((p) => !p.spectator).length),
+    playing: playingOverride ?? isPlayingPhase(st.phase),
+    ts: Date.now(),
+  });
+}
+
+async function openDirectoryAsHost(code: string) {
+  const supa = getClient();
+  const ch = supa.channel(DIRECTORY, { config: { presence: { key: code } } });
+  ch.on('presence', { event: 'sync' }, () => {});
+  await new Promise<void>((resolve) => {
+    const t = setTimeout(() => resolve(), 8000);
+    ch.subscribe((s) => {
+      if (s === 'SUBSCRIBED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
+        clearTimeout(t);
+        resolve();
+      }
+    });
+  });
+  dirChannel = ch;
+  updateDirectory(false);
+  clearInterval(dirHeartbeat);
+  dirHeartbeat = setInterval(() => updateDirectory(), DIR_HEARTBEAT_MS);
+}
+
+async function teardownDirectory() {
+  clearInterval(dirHeartbeat);
+  dirHeartbeat = undefined;
+  if (dirChannel) {
+    const d = dirChannel;
+    dirChannel = null;
+    try {
+      await d.unsubscribe();
+      if (client) await client.removeChannel(d);
+    } catch { /* already gone */ }
+  }
+}
+
+// ── public lobby browsing (multiplayer menu) ─────────────────────────────────
+
+interface DirEntry { code: string; host: string; players: number; playing: boolean; ts: number }
+let browseRaw: DirEntry[] = [];
+const dirSeen = new Map<string, { marker: number; seenAt: number }>();
+
+function publishLobbies() {
+  const now = Date.now();
+  const fresh = browseRaw.filter((l) => {
+    const s = dirSeen.get(l.code);
+    return s && now - s.seenAt < DIR_STALE_MS;
+  });
+  useStore.setState({
+    publicLobbies: fresh.map(({ code, host, players, playing }) => ({ code, host, players, playing })),
+  });
+}
+
+export async function startBrowsing(): Promise<void> {
+  if (!mpConfigured() || browseChannel) return;
+  const supa = getClient();
+  const ch = supa.channel(DIRECTORY);
+  ch.on('presence', { event: 'sync' }, () => {
+    const state = ch.presenceState<{ host: string; players: number; playing: boolean; ts?: number }>();
+    browseRaw = Object.entries(state).map(([code, metas]) => {
+      const m = metas[metas.length - 1]; // newest meta wins after re-tracks
+      return {
+        code,
+        host: m?.host ?? 'Host',
+        players: m?.players ?? 1,
+        playing: m?.playing ?? false,
+        ts: m?.ts ?? 0,
+      };
+    });
+    for (const e of browseRaw) {
+      const s = dirSeen.get(e.code);
+      if (!s || s.marker !== e.ts) dirSeen.set(e.code, { marker: e.ts, seenAt: Date.now() });
+    }
+    publishLobbies();
+  });
+  browseChannel = ch;
+  clearInterval(browsePrune);
+  browsePrune = setInterval(publishLobbies, 10_000);
+  await new Promise<void>((resolve) => {
+    const t = setTimeout(() => resolve(), 8000);
+    ch.subscribe((s) => {
+      if (s === 'SUBSCRIBED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
+        clearTimeout(t);
+        resolve();
+      }
+    });
+  });
+}
+
+export async function stopBrowsing(): Promise<void> {
+  clearInterval(browsePrune);
+  browsePrune = undefined;
+  browseRaw = [];
+  dirSeen.clear();
+  if (browseChannel) {
+    const b = browseChannel;
+    browseChannel = null;
+    try {
+      await b.unsubscribe();
+      if (client) await client.removeChannel(b);
+    } catch { /* already gone */ }
+  }
+  useStore.setState({ publicLobbies: [] });
 }
 
 type StoreState = ReturnType<typeof useStore.getState>;
@@ -78,15 +207,22 @@ function readPlayers(): PlayerInfo[] {
   if (!channel) return [];
   const state = channel.presenceState<{
     name: string; host: boolean; playing: boolean; token?: string; color?: string;
+    spectator?: boolean;
   }>();
-  return Object.entries(state).map(([id, metas]) => ({
-    id,
-    name: metas[0]?.name ?? 'Explorer',
-    host: metas[0]?.host ?? false,
-    playing: metas[0]?.playing ?? false,
-    token: metas[0]?.token,
-    color: metas[0]?.color,
-  }));
+  // A re-track (e.g. host flipping `playing`, spectator converting) can briefly
+  // leave old+new metas side by side — the newest meta is authoritative.
+  return Object.entries(state).map(([id, metas]) => {
+    const m = metas[metas.length - 1];
+    return {
+      id,
+      name: m?.name ?? 'Explorer',
+      host: m?.host ?? false,
+      playing: m?.playing ?? false,
+      token: m?.token,
+      color: m?.color,
+      spectator: m?.spectator ?? false,
+    };
+  });
 }
 
 function attachHandlers(ch: RealtimeChannel) {
@@ -119,6 +255,8 @@ function attachHandlers(ch: RealtimeChannel) {
     }
     // Host: a player leaving mid-round may complete the "everyone guessed" set.
     if (isHost && st.phase === 'round' && st.round) maybeReveal(st.round.i);
+    // Host of a public lobby: keep the directory listing fresh.
+    if (isHost) updateDirectory();
   });
 
   ch.on('broadcast', { event: 'round' }, ({ payload }) => onRound(payload));
@@ -128,7 +266,7 @@ function attachHandlers(ch: RealtimeChannel) {
   ch.on('broadcast', { event: 'again' }, () => onAgain());
 }
 
-async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'not-found' | 'in-progress' | 'taken' | 'error'> {
+async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'spectate' | 'not-found' | 'taken' | 'error'> {
   const supa = getClient();
   const ch = supa.channel(`room:${code}`, {
     config: { broadcast: { self: true }, presence: { key: me!.id } },
@@ -149,9 +287,9 @@ async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'not-f
 
   channel = ch;
   isHost = asHost;
-  await ch.track(myPresence(asHost, false));
 
   if (asHost) {
+    await ch.track(myPresence(true, false));
     // Brief settle to detect an (astronomically unlikely) code collision.
     await new Promise((r) => setTimeout(r, 600));
     if (readPlayers().some((p) => p.id !== me!.id && p.host)) {
@@ -161,8 +299,9 @@ async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'not-f
     return 'ok';
   }
 
-  // Guest: wait for the host to appear in presence. Under concurrent joins
-  // the member list converges slowly, so give it a generous window.
+  // Guest: wait for the host to appear in presence BEFORE tracking ourselves,
+  // so we can join with the right role. Under concurrent joins the member list
+  // converges slowly, so give it a generous window.
   const deadline = Date.now() + JOIN_VALIDATION_MS;
   let hostSeen: PlayerInfo | undefined;
   while (Date.now() < deadline) {
@@ -175,11 +314,11 @@ async function openChannel(code: string, asHost: boolean): Promise<'ok' | 'not-f
     await teardownChannel();
     return 'not-found';
   }
-  if (hostSeen.playing) {
-    await teardownChannel();
-    return 'in-progress';
-  }
-  return 'ok';
+  // Game in progress → join as a spectator; converted to a player when the
+  // lobby reopens.
+  const spectate = hostSeen.playing;
+  await ch.track(myPresence(false, false, spectate));
+  return spectate ? 'spectate' : 'ok';
 }
 
 async function teardownChannel() {
@@ -195,18 +334,24 @@ async function teardownChannel() {
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-export async function createLobby(name: string): Promise<void> {
+export async function createLobby(name: string, asPublic = false): Promise<void> {
   if (!mpConfigured()) {
     set({ error: 'Multiplayer is not configured yet (missing Supabase keys).' });
     return;
   }
+  await stopBrowsing();
   await loadCountries();
   me = { id: myId(), name };
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = genCode();
     const res = await openChannel(code, true);
     if (res === 'ok') {
-      set({ screen: 'mp-wait', phase: 'wait', code, isHost: true, totals: {}, results: null, round: null });
+      isPublic = asPublic;
+      set({
+        screen: 'mp-wait', phase: 'wait', code, isHost: true,
+        totals: {}, results: null, round: null, isSpectator: false,
+      });
+      if (asPublic) await openDirectoryAsHost(code);
       return;
     }
     if (res !== 'taken') break;
@@ -219,15 +364,22 @@ export async function joinLobby(code: string, name: string): Promise<void> {
     set({ error: 'Multiplayer is not configured yet (missing Supabase keys).' });
     return;
   }
+  await stopBrowsing();
   await loadCountries();
   me = { id: myId(), name };
   const res = await openChannel(code.toUpperCase(), false);
   if (res === 'ok') {
-    set({ screen: 'mp-wait', phase: 'wait', code: code.toUpperCase(), isHost: false, totals: {}, results: null, round: null });
+    set({
+      screen: 'mp-wait', phase: 'wait', code: code.toUpperCase(), isHost: false,
+      totals: {}, results: null, round: null, isSpectator: false,
+    });
+  } else if (res === 'spectate') {
+    set({
+      screen: 'mp-game', phase: 'wait', code: code.toUpperCase(), isHost: false,
+      totals: {}, results: null, round: null, isSpectator: true,
+    });
   } else if (res === 'not-found') {
     set({ error: `Lobby "${code.toUpperCase()}" not found.` });
-  } else if (res === 'in-progress') {
-    set({ error: 'That game is already in progress.' });
   } else {
     set({ error: 'Could not join the lobby. Please try again.' });
   }
@@ -239,6 +391,8 @@ export async function leave(backToMenu = true): Promise<void> {
   revealSent = new Set();
   roundPlan = [];
   isHost = false;
+  isPublic = false;
+  await teardownDirectory();
   await teardownChannel();
   useStore.getState().resetMp();
   if (backToMenu) set({ screen: 'mp-menu' });
@@ -252,6 +406,7 @@ export function startGame(s: MpSettings): void {
   revealSent = new Set();
   set({ settings: s, totals: {} });
   void channel.track(myPresence(true, true));
+  updateDirectory(true);
   sendRound(0);
 }
 
@@ -273,6 +428,7 @@ export function submitGuess(lat: number, lng: number): void {
 export function playAgain(): void {
   if (!channel || !isHost) return;
   void channel.track(myPresence(true, false));
+  updateDirectory(false);
   void channel.send({ type: 'broadcast', event: 'again', payload: {} });
 }
 
@@ -294,7 +450,7 @@ function sendRound(i: number) {
 
 function maybeReveal(i: number) {
   const st = useStore.getState();
-  const present = st.players.map((p) => p.id);
+  const present = st.players.filter((p) => !p.spectator).map((p) => p.id);
   const got = collected.get(i);
   if (!got || present.length === 0) return;
   if (present.every((id) => got.has(id))) fireReveal(i);
@@ -305,9 +461,10 @@ function fireReveal(i: number) {
   revealSent.add(i);
   clearTimeout(roundTimer);
   const got = collected.get(i) ?? new Map<string, GuessEntry>();
-  // Players present but silent get a null guess (0 points).
+  // Players present but silent get a null guess (0 points). Spectators are
+  // not part of the round.
   for (const p of useStore.getState().players) {
-    if (!got.has(p.id)) {
+    if (!p.spectator && !got.has(p.id)) {
       got.set(p.id, { id: p.id, name: p.name, lat: null, lng: null, token: p.token, color: p.color });
     }
   }
@@ -387,7 +544,14 @@ function onFinal(_p: unknown) {
 }
 
 function onAgain() {
-  set({ phase: 'wait', screen: 'mp-wait', round: null, results: null, guessedIds: [], myGuess: null, totals: {} });
+  // Spectators become full players once the lobby reopens.
+  if (useStore.getState().isSpectator && channel) {
+    void channel.track(myPresence(false, false, false));
+  }
+  set({
+    phase: 'wait', screen: 'mp-wait', round: null, results: null,
+    guessedIds: [], myGuess: null, totals: {}, isSpectator: false,
+  });
 }
 
 export function playerColor(id: string): string {
