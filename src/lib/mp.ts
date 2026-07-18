@@ -26,6 +26,8 @@ const DIR_HEARTBEAT_MS = 20_000;
 const DIR_STALE_MS = 50_000;
 
 // host-only round orchestration
+let gameNo = 0; // host: unique id per started game, rides round/reveal payloads
+let clientGame = -1; // all clients: the game id currently being played
 let roundPlan: string[] = [];
 let settings: MpSettings = { rounds: 5, seconds: 45 };
 let collected = new Map<number, Map<string, GuessEntry>>();
@@ -406,6 +408,7 @@ export async function leave(backToMenu = true): Promise<void> {
   collected = new Map();
   revealSent = new Set();
   revealsSeen = new Set();
+  clientGame = -1;
   roundPlan = [];
   isHost = false;
   isPublic = false;
@@ -418,6 +421,7 @@ export async function leave(backToMenu = true): Promise<void> {
 export function startGame(s: MpSettings): void {
   if (!channel || !isHost) return;
   settings = s;
+  gameNo = Date.now();
   roundPlan = pickRoundCountries(s.rounds);
   collected = new Map();
   revealSent = new Set();
@@ -457,7 +461,7 @@ function sendRound(i: number) {
   const iso = roundPlan[i];
   const endsAt = Date.now() + settings.seconds * 1000;
   collected.set(i, new Map());
-  const payload = { i, total: settings.rounds, iso, endsAt };
+  const payload = { g: gameNo, i, total: settings.rounds, iso, endsAt };
   onRound(payload); // host processes locally, never waits for its own echo
   void sendReliable('round', payload);
   // second delivery for clients whose first copy got lost (handlers dedupe)
@@ -486,7 +490,7 @@ function fireReveal(i: number) {
       got.set(p.id, { id: p.id, name: p.name, lat: null, lng: null, token: p.token, color: p.color });
     }
   }
-  const payload = { i, iso: roundPlan[i], guesses: [...got.values()] };
+  const payload = { g: gameNo, i, iso: roundPlan[i], guesses: [...got.values()] };
   void onReveal(payload); // local-first
   void sendReliable('reveal', payload);
   setTimeout(() => void sendReliable('reveal', payload), 1200);
@@ -507,11 +511,18 @@ function sendFinal() {
 
 let revealsSeen = new Set<number>();
 
-function onRound(p: { i: number; total: number; iso: string; endsAt: number }) {
+function onRound(p: { g?: number; i: number; total: number; iso: string; endsAt: number }) {
   const st = useStore.getState();
-  // duplicate delivery of the current round — don't reset local guess state
-  if (st.phase === 'round' && st.round?.i === p.i && st.round.iso === p.iso) return;
-  if (p.i === 0) revealsSeen = new Set();
+  const g = p.g ?? 0;
+  if (g === clientGame) {
+    // Same game: ignore duplicate or stale deliveries. Crucially this must
+    // hold during 'reveal' too — a late duplicate of the current round used
+    // to re-enter round phase and wipe the reveal off the screen.
+    if ((st.phase === 'round' || st.phase === 'reveal') && st.round && p.i <= st.round.i) return;
+  } else {
+    clientGame = g;
+    revealsSeen = new Set();
+  }
   preloadFlag(p.iso);
   set({
     phase: 'round',
@@ -539,7 +550,14 @@ function onGuess(p: {
   }
 }
 
-async function onReveal(p: { i: number; iso: string; guesses: GuessEntry[] }) {
+async function onReveal(p: { g?: number; i: number; iso: string; guesses: GuessEntry[] }) {
+  const g = p.g ?? 0;
+  if (g !== clientGame) {
+    // reveal from a game we haven't tracked yet (e.g. spectator joining
+    // mid-round) — adopt it
+    clientGame = g;
+    revealsSeen = new Set();
+  }
   if (revealsSeen.has(p.i)) return; // duplicate delivery
   revealsSeen.add(p.i);
   await loadCountries();
