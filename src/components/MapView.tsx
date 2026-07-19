@@ -51,6 +51,7 @@ export default function MapView({
   const theme = useStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const loadedRef = useRef(false);
   const myMarkerRef = useRef<maplibregl.Marker | null>(null);
   const revealMarkersRef = useRef<maplibregl.Marker[]>([]);
   const interactiveRef = useRef(interactive);
@@ -110,6 +111,9 @@ export default function MapView({
       pitchWithRotate: false,
     });
     map.touchZoomRotate.disableRotation();
+    map.on('load', () => {
+      loadedRef.current = true;
+    });
 
     map.on('click', (e) => {
       if (!interactiveRef.current || !onPlaceRef.current) return;
@@ -120,6 +124,7 @@ export default function MapView({
     return () => {
       map.remove();
       mapRef.current = null;
+      loadedRef.current = false;
       myMarkerRef.current = null;
       revealMarkersRef.current = [];
     };
@@ -138,7 +143,11 @@ export default function MapView({
       map.setPaintProperty('hl-fill', 'fill-color', c.hl);
       map.setPaintProperty('hl-line', 'line-color', c.hl);
     };
-    if (map.isStyleLoaded()) apply();
+    // NOTE: never gate on isStyleLoaded() — it goes false whenever tiles are
+    // being processed (constantly on phones mid-zoom), and 'load' fires only
+    // once per map, so a deferred apply would never run. After the initial
+    // 'load', style mutations are always safe.
+    if (loadedRef.current || map.isStyleLoaded()) apply();
     else map.once('load', apply);
   }, [theme]);
 
@@ -240,7 +249,11 @@ export default function MapView({
       }
     };
 
-    if (map.isStyleLoaded()) apply();
+    // See note in the theme effect: isStyleLoaded() is unreliable post-load,
+    // and waiting for 'load' after it already fired means the reveal
+    // highlight and miss-lines would silently never render (the exact bug on
+    // phones, where tiles are still crunching at reveal time).
+    if (loadedRef.current || map.isStyleLoaded()) apply();
     else map.once('load', apply);
   }, [revealIso, revealPins, countries]);
 
